@@ -15,7 +15,7 @@ enum {
     PALICO_BIND = 0x01de92d0, PALICO_BOX_LOOKUP = 0x01de5710,
     BOX_VTABLE = 0x0346b020, SPRITE_VTABLE = 0x03516088,
     MELEE_LOOKUP = 0x0197e840, RANGED_LOOKUP = 0x0197e880,
-    PALICO_LOOKUP = 0x0191b4a0, WEAPON_PARAMS = 0x05011f00,
+    PALICO_LOOKUP = 0x0191b4a0, KINSECT_LOOKUP = 0x0197e690, WEAPON_PARAMS = 0x05011f00,
     DUAL_LOOKUP = 0x00462700, DUAL_TABLE = 0x05012190,
     PANEL_VTABLE = 0x0346d968, HUNTER_PANEL_REFRESH = 0x01e0b5f0,
     PALICO_PANEL_REFRESH = 0x01e0b2e0, PANEL_CLOSE = 0x01e0a540,
@@ -30,15 +30,16 @@ enum {
 
 enum {
     BOX_MODE = 0x28f0, BOX_SUBMODE = 0x28f4, BOX_GRID = 0x2950,
-    UPGRADE_EQUIPMENT = 0, CHANGE_EQUIPMENT = 1, SET_DECORATIONS = 4,
+    UPGRADE_EQUIPMENT = 0, CHANGE_EQUIPMENT = 1, SET_DECORATIONS = 4, NURTURE_KINSECT = 5,
     HUNTER_GRID = 0, PALICO_GRID = 1, HUNTER_GRID_LIMIT = 2500, PALICO_GRID_LIMIT = 750,
     MAX_CELLS = 128,
     GRID_COUNT = 0x1d8, GRID_CELLS = 0x1e8,
     CELL_ICON = 0x688,
     ICON_LEFT = 0x80, ICON_RIGHT = 0x88, ICON_WISHLIST = 0xa8,
     ICON_PENDANT = 0xb8, ICON_TYPE = 0xf0,
-    WORK_TYPE = 0x18, WORK_KIND = 0x20, WORK_ID = 0x24,
-    WEAPON = 1, DUAL_BLADES = 2, BOW = 11,
+    WORK_TYPE = 0x18, WORK_KIND = 0x20, WORK_ID = 0x24, WORK_KINSECT_ELEMENT = 0x3c,
+    WEAPON = 1, KINSECT = 4, DUAL_BLADES = 2, BOW = 11,
+    KINSECT_MODEL_COUNT = 201, KINSECT_MAX_ELEMENT = 5,
     MELEE_ELEMENT = 0x25, MELEE_HIDDEN = 0x28, MELEE_COMBO = 0x31,
     BOW_ELEMENT = 0x27, BOW_HIDDEN = 0x2a, COMBO_PRIMARY = 0xc, PALICO_ELEMENT = 0x2e,
     GUI_LIFECYCLE = 0x1d04, GUI_OPENING = 1, GUI_ACTIVE = 2,
@@ -68,7 +69,7 @@ typedef bool (*BindCell)(void *box, uint32_t index, void *cell);
 typedef uintptr_t (*CloseBox)(void *box);
 typedef const uint8_t *(*FindEquipment)(void *box, uint32_t index);
 typedef const uint8_t *(*FindWeapon)(uint32_t kind, uint32_t id);
-typedef const uint8_t *(*FindPalicoWeapon)(uint32_t id);
+typedef const uint8_t *(*FindModel)(uint32_t id);
 typedef const uint8_t *(*FindCombo)(void *table, uint32_t id);
 typedef void *(*LoadTexture)(void *dti, const char *name);
 typedef void (*ReleaseTexture)(void *resource);
@@ -77,9 +78,9 @@ typedef uint32_t (*EquippedIndex)(const void *save, uint32_t slot);
 typedef void (*RefreshPanel)(void *menu, bool force);
 typedef bool (*ClosePanel)(void *menu);
 
-typedef struct WeaponElement {
+typedef struct EquipmentEffect {
     unsigned active, hidden;
-} WeaponElement;
+} EquipmentEffect;
 
 typedef enum EquippedSlotId {
     EQUIPPED_HUNTER,
@@ -109,7 +110,7 @@ static const EquippedSlot equipped_slots[EQUIPPED_SLOT_COUNT] = {
 typedef struct EquippedBadge {
     void *menu;
     BadgeState badge;
-    WeaponElement element;
+    EquipmentEffect element;
 } EquippedBadge;
 
 static uintptr_t game;
@@ -213,14 +214,14 @@ static void restore_icon(BadgeState *state, void *icon) {
     *state = (BadgeState){0};
 }
 
-static WeaponElement weapon_element(const uint8_t *item, bool palico) {
-    const WeaponElement none = {0};
+static EquipmentEffect weapon_element(const uint8_t *item, bool palico) {
+    const EquipmentEffect none = {0};
     if (!item || read_u32(item, WORK_TYPE) != WEAPON) return none;
     const uint32_t id = read_u32(item, WORK_ID);
     if (palico) {
         if (id >= 201 || !read_pointer((void *)(game + WEAPON_PARAMS), 0)) return none;
-        const uint8_t *row = ((FindPalicoWeapon)(game + PALICO_LOOKUP))(id);
-        return row ? (WeaponElement){row[PALICO_ELEMENT], 0} : none;
+        const uint8_t *row = ((FindModel)(game + PALICO_LOOKUP))(id);
+        return row ? (EquipmentEffect){row[PALICO_ELEMENT], 0} : none;
     }
     const uint32_t kind = read_u32(item, WORK_KIND);
     if (kind > BOW || id >= 321) return none;
@@ -232,12 +233,27 @@ static WeaponElement weapon_element(const uint8_t *item, bool palico) {
         void *table = read_pointer((void *)(game + DUAL_TABLE), 0);
         const uint8_t *combo = table && read_pointer(table, 0xc8)
                                ? ((FindCombo)(game + DUAL_LOOKUP))(table, row[MELEE_COMBO]) : NULL;
-        return combo ? (WeaponElement){combo[COMBO_PRIMARY], 0} : none;
+        return combo ? (EquipmentEffect){combo[COMBO_PRIMARY], 0} : none;
     }
-    return (WeaponElement){row[bow ? BOW_ELEMENT : MELEE_ELEMENT], row[bow ? BOW_HIDDEN : MELEE_HIDDEN]};
+    return (EquipmentEffect){row[bow ? BOW_ELEMENT : MELEE_ELEMENT], row[bow ? BOW_HIDDEN : MELEE_HIDDEN]};
 }
 
-static bool show_icon(BadgeState *state, void *icon, WeaponElement element) {
+static EquipmentEffect kinsect_element(const uint8_t *item) {
+    const EquipmentEffect none = {0};
+    if (!item || read_u32(item, WORK_TYPE) != KINSECT) return none;
+
+    /* The stock Kinsect details read the assigned element from the owned item. */
+    const uint32_t element = read_u32(item, WORK_KINSECT_ELEMENT);
+    const uint32_t id = read_u32(item, WORK_ID);
+    if (!element || element > KINSECT_MAX_ELEMENT || id >= KINSECT_MODEL_COUNT ||
+        !read_pointer((void *)(game + WEAPON_PARAMS), 0)) return none;
+
+    /* The box binder can return success even when the model row is unavailable. */
+    if (!((FindModel)(game + KINSECT_LOOKUP))(id)) return none;
+    return (EquipmentEffect){.active = element};
+}
+
+static bool show_icon(BadgeState *state, void *icon, EquipmentEffect element) {
     BadgeStyle style;
     if (!badge_resolve(element.active, element.hidden, &style)) return false;
     void *layer = read_pointer(icon, ICON_LEFT);
@@ -250,12 +266,13 @@ static bool show_icon(BadgeState *state, void *icon, WeaponElement element) {
     return load_badge_atlas() && badge_show(&sprite_api, state, layer, pendant, &atlas, style);
 }
 
-static bool supported_box_mode(void *box, bool palico) {
+static bool supported_box_mode(void *box, bool palico, bool kinsect) {
     const uint32_t mode = read_u32(box, BOX_MODE);
     const uint32_t submode = read_u32(box, BOX_SUBMODE);
     if (palico) return submode == PALICO_GRID && mode == CHANGE_EQUIPMENT;
     return submode == HUNTER_GRID &&
-           (mode == UPGRADE_EQUIPMENT || mode == CHANGE_EQUIPMENT || mode == SET_DECORATIONS);
+           (mode == UPGRADE_EQUIPMENT || mode == CHANGE_EQUIPMENT || mode == SET_DECORATIONS ||
+            (kinsect && mode == NURTURE_KINSECT));
 }
 
 static bool gui_is_open(const void *menu) {
@@ -276,15 +293,21 @@ static bool bind_cell(void *box, uint32_t index, void *cell, bool palico, BindCe
 
     const bool result = original(box, index, cell);
     if (!result || index >= (palico ? PALICO_GRID_LIMIT : HUNTER_GRID_LIMIT) ||
-        !gui_is_open(box) || !supported_box_mode(box, palico) || read_u32(icon, ICON_TYPE) != WEAPON)
+        !gui_is_open(box))
         return result;
+
+    const uint32_t type = read_u32(icon, ICON_TYPE);
+    const bool kinsect = !palico && type == KINSECT;
+    if ((type != WEAPON && !kinsect) || !supported_box_mode(box, palico, kinsect)) return result;
 
     AcquireSRWLockExclusive(&ui_lock);
     if (!owned_box || owned_box == box) {
         BadgeState *state = find_badge(box, cell);
         if (state && !state->layer) {
             const FindEquipment lookup = (FindEquipment)(game + (palico ? PALICO_BOX_LOOKUP : BOX_LOOKUP));
-            if (show_icon(state, icon, weapon_element(lookup(box, index), palico))) owned_box = box;
+            const uint8_t *item = lookup(box, index);
+            const EquipmentEffect effect = kinsect ? kinsect_element(item) : weapon_element(item, palico);
+            if (show_icon(state, icon, effect)) owned_box = box;
         }
     }
     ReleaseSRWLockExclusive(&ui_lock);
@@ -348,7 +371,7 @@ static void refresh_panel(void *menu, bool force, EquippedSlotId slot_id, Refres
     }
     original(menu, force);
 
-    WeaponElement element = {0};
+    EquipmentEffect element = {0};
     if (save && gui_is_open(menu) && read_u32(menu, PANEL_MODE) == slot->mode &&
         read_u32(menu, slot->cache_offset) == index && index < slot->work_capacity &&
         read_u32(icon, ICON_TYPE) == WEAPON) {
@@ -415,6 +438,7 @@ static bool supported_game(uintptr_t base) {
         {PALICO_BIND,     {0x48,0x89,0x5c,0x24,0x10,0x48,0x89,0x6c,0x24,0x18,0x56,0x57,0x41,0x57,0x48,0x83}},
         {PALICO_BOX_LOOKUP,{0x40,0x53,0x48,0x83,0xec,0x20,0x8b,0x81,0x78,0x29,0x00,0x00,0x25,0x00,0x0f,0x00}},
         {PALICO_LOOKUP,   {0x8b,0xd1,0x83,0xf9,0xff,0x75,0x03,0x33,0xc0,0xc3,0x48,0x8b,0x0d,0x4f,0x6a,0x6f}},
+        {KINSECT_LOOKUP,  {0x8b,0xd1,0x83,0xf9,0xff,0x75,0x03,0x33,0xc0,0xc3,0x48,0x8b,0x0d,0x5f,0x38,0x69}},
         {HUNTER_PANEL_REFRESH,{0x40,0x53,0x56,0x41,0x54,0x41,0x55,0x41,0x57,0x48,0x83,0xec,0x20,0x48,0x89,0x6c}},
         {PALICO_PANEL_REFRESH,{0x40,0x53,0x57,0x41,0x54,0x41,0x55,0x41,0x57,0x48,0x83,0xec,0x20,0x44,0x0f,0xb6}},
         {PANEL_CLOSE,     {0x48,0x89,0x6c,0x24,0x20,0x57,0x48,0x83,0xec,0x20,0x83,0x89,0x98,0x22,0x00,0x00}},

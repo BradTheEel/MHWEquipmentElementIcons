@@ -11,7 +11,7 @@ int run_badge_cases(void);
 static uint32_t work[16];
 static uint8_t row[0x60], swapped_weapon_row[0x60];
 static unsigned bind_calls, close_calls;
-static bool item_present;
+static bool item_present, kinsect_model_present;
 static uint64_t save_data[0xb0cc8 / 8];
 static unsigned panel_updates, panel_closes;
 static bool panel_force;
@@ -29,6 +29,11 @@ static const uint8_t *find_weapon(uint32_t kind, uint32_t id) {
 static const uint8_t *find_palico_weapon(uint32_t id) {
     assert(id == 7);
     return row;
+}
+
+static const uint8_t *find_kinsect(uint32_t id) {
+    assert(id == 7);
+    return kinsect_model_present ? row : NULL;
 }
 
 static bool stock_bind(void *box, uint32_t index, void *cell) {
@@ -125,6 +130,7 @@ static void reset_scenario(void) {
     bind_calls = close_calls = panel_updates = panel_closes = 0;
     panel_force = false;
     item_present = true;
+    kinsect_model_present = true;
     InterlockedExchange(&hooks_ready, 1);
 }
 
@@ -176,7 +182,7 @@ static void test_hunter_grid_modes(void) {
     fixture.box[BOX_MODE / 8] = SET_DECORATIONS;
     assert(bind_detour(fixture.box, 12, fixture.cell));
     assert(read_pointer(fixture.sprite.data, 0x150) == &atlas);
-    fixture.box[BOX_MODE / 8] = 5; /* unrelated equipment selector */
+    fixture.box[BOX_MODE / 8] = 5; /* Kinsect upgrade selector */
     assert(bind_detour(fixture.box, 12, fixture.cell));
     assert(memcmp(&fixture.sprite, &stock, sizeof(stock)) == 0);
     fixture.box[BOX_MODE / 8] = CHANGE_EQUIPMENT;
@@ -210,6 +216,72 @@ static void test_hunter_grid_reuse(void) {
     assert(read_pointer(fixture.sprite.data, 0x150) == &atlas);
     assert(close_detour(fixture.box) == 7 && bind_calls == 4 && close_calls == 1);
     assert(memcmp(&fixture.sprite, &stock, sizeof(stock)) == 0);
+}
+
+static void test_kinsect_grid(void) {
+    GridFixture fixture;
+    prepare_grid(&fixture, CHANGE_EQUIPMENT, false);
+    work[WORK_TYPE / 4] = 4; /* stock Kinsect equipment category */
+    work[WORK_ID / 4] = 7;
+
+    static const float element_uv[][4] = {
+        {0.0f, 0.0f, 64.0f, 64.0f},
+        {64.0f, 0.0f, 128.0f, 64.0f},
+        {128.0f, 0.0f, 192.0f, 64.0f},
+        {192.0f, 0.0f, 256.0f, 64.0f},
+        {0.0f, 64.0f, 64.0f, 128.0f}
+    };
+    for (uint32_t element = 1; element <= 5; ++element) {
+        work[0x3c / 4] = element; /* stock runtime element field */
+        assert(bind_detour(fixture.box, 12, fixture.cell));
+        assert(read_pointer(fixture.sprite.data, SPRITE_OVERRIDE_TEXTURE) == &atlas);
+        assert(memcmp(fixture.sprite.data + SPRITE_UV_RECT, element_uv[element - 1], sizeof(element_uv[0])) == 0);
+        assert(fixture.sprite.data[SPRITE_FIRST_ALPHA] == stock.data[SPRITE_FIRST_ALPHA]);
+    }
+
+    const uint32_t invalid_elements[] = {0, UINT32_MAX, 6};
+    for (unsigned i = 0; i < sizeof(invalid_elements) / sizeof(invalid_elements[0]); ++i) {
+        work[0x3c / 4] = invalid_elements[i];
+        assert(bind_detour(fixture.box, 12, fixture.cell));
+        assert(memcmp(&fixture.sprite, &stock, sizeof(stock)) == 0);
+    }
+
+    work[0x3c / 4] = 2;
+    kinsect_model_present = false;
+    assert(bind_detour(fixture.box, 12, fixture.cell));
+    assert(memcmp(&fixture.sprite, &stock, sizeof(stock)) == 0);
+    kinsect_model_present = true;
+    work[WORK_ID / 4] = 201;
+    assert(bind_detour(fixture.box, 12, fixture.cell));
+    assert(memcmp(&fixture.sprite, &stock, sizeof(stock)) == 0);
+    work[WORK_ID / 4] = 7;
+
+    fixture.box[BOX_MODE / 8] = UPGRADE_EQUIPMENT;
+    assert(bind_detour(fixture.box, 12, fixture.cell));
+    assert(read_pointer(fixture.sprite.data, SPRITE_OVERRIDE_TEXTURE) == &atlas);
+    fixture.box[BOX_MODE / 8] = 5; /* Nurture a Kinsect */
+    assert(bind_detour(fixture.box, 12, fixture.cell));
+    assert(read_pointer(fixture.sprite.data, SPRITE_OVERRIDE_TEXTURE) == &atlas);
+    fixture.box[BOX_MODE / 8] = SET_DECORATIONS;
+    assert(bind_detour(fixture.box, 12, fixture.cell));
+    assert(read_pointer(fixture.sprite.data, SPRITE_OVERRIDE_TEXTURE) == &atlas);
+    fixture.box[BOX_MODE / 8] = 7; /* Change Kinsect Elements */
+    assert(bind_detour(fixture.box, 12, fixture.cell));
+    assert(memcmp(&fixture.sprite, &stock, sizeof(stock)) == 0);
+    fixture.box[BOX_MODE / 8] = 2; /* sell */
+    assert(bind_detour(fixture.box, 12, fixture.cell));
+    assert(memcmp(&fixture.sprite, &stock, sizeof(stock)) == 0);
+
+    fixture.box[BOX_MODE / 8] = CHANGE_EQUIPMENT | ((uint64_t)PALICO_GRID << 32);
+    assert(palico_bind_detour(fixture.box, 12, fixture.cell));
+    assert(memcmp(&fixture.sprite, &stock, sizeof(stock)) == 0);
+
+    fixture.box[BOX_MODE / 8] = CHANGE_EQUIPMENT;
+    assert(bind_detour(fixture.box, 12, fixture.cell));
+    assert(read_pointer(fixture.sprite.data, SPRITE_OVERRIDE_TEXTURE) == &atlas);
+    assert(close_detour(fixture.box) == 7);
+    assert(memcmp(&fixture.sprite, &stock, sizeof(stock)) == 0);
+    puts("PASS Kinsect grid badges for five elements, invalid records, cell reuse and menu scope");
 }
 
 static void test_palico_grid(void) {
@@ -313,6 +385,7 @@ static void prepare_native_stubs(void) {
     install_stub(RANGED_LOOKUP, (uintptr_t)find_weapon);
     install_stub(0x1de5710, (uintptr_t)find_equipment);
     install_stub(0x191b4a0, (uintptr_t)find_palico_weapon);
+    install_stub(0x197e690, (uintptr_t)find_kinsect);
     install_stub(0x1b8dbb0, (uintptr_t)get_save);
     install_stub(0x1354930, (uintptr_t)get_hunter_slot);
     write_global(0x5011f00, work);
@@ -406,6 +479,7 @@ int main(void) {
     prepare_native_stubs();
     test_hunter_grid_modes();
     test_hunter_grid_reuse();
+    test_kinsect_grid();
     test_equipped_hunter();
     test_equipped_palico();
     test_palico_grid();
