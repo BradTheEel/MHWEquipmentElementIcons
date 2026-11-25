@@ -1,0 +1,17 @@
+{
+  "resource_path": "ui/common/tex/equipment_element_icons",
+  "tile_size": 64,
+  "columns": 4,
+  "rows": 4,
+  "icons": [
+    { "id": 1, "effect": "fire", "stock_tile": 3 },
+    { "id": 2, "effect": "water", "stock_tile": 4 },
+    { "id": 3, "effect": "ice", "stock_tile": 6 },
+    { "id": 4, "effect": "thunder", "stock_tile": 5 },
+    { "id": 5, "effect": "dragon", "stock_tile": 7 },
+    { "id": 6, "effect": "poison", "stock_tile": 8 },
+    { "id": 7, "effect": "paralysis", "stock_tile": 10 },
+    { "id": 8, "effect": "sleep", "stock_tile": 12 },
+    { "id": 9, "effect": "blast", "stock_tile": 13 }
+  ]
+}

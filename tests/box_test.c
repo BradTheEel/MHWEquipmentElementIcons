@@ -252,7 +252,7 @@ static void test_equipped_hunter(void) {
 
     expect_panel_update(hunter_panel_detour, &fixture, true);
     assert(read_pointer(fixture.hunter.data, 0x150) == &atlas);
-    const float fire_uv[] = {192.0f, 0.0f, 256.0f, 64.0f};
+    const float fire_uv[] = {0.0f, 0.0f, 64.0f, 64.0f};
     assert(memcmp(fixture.hunter.data + 0x15c, fire_uv, sizeof(fire_uv)) == 0);
     const Sprite drawn = fixture.hunter;
     expect_panel_update(hunter_panel_detour, &fixture, false);
@@ -262,7 +262,7 @@ static void test_equipped_hunter(void) {
 
     save_data[0xa8 / 8] = 1;
     expect_panel_update(hunter_panel_detour, &fixture, false);
-    const float thunder_uv[] = {320.0f, 0.0f, 384.0f, 64.0f};
+    const float thunder_uv[] = {192.0f, 0.0f, 256.0f, 64.0f};
     assert(memcmp(fixture.hunter.data + 0x15c, thunder_uv, sizeof(thunder_uv)) == 0);
     save_data[0xa8 / 8] = UINT32_MAX;
     expect_panel_update(hunter_panel_detour, &fixture, false);
@@ -339,6 +339,67 @@ static void prepare_native_stubs(void) {
     atlas.resource = texture;
 }
 
+static unsigned atlas_load_calls, atlas_release_calls;
+static void *test_texture;
+
+static void *load_test_texture(void *dti, const char *name) {
+    assert(dti == (void *)(game + TEXTURE_DTI));
+    assert(strcmp(name, "ui\\common\\tex\\equipment_element_icons") == 0);
+    ++atlas_load_calls;
+    return test_texture;
+}
+
+static void release_test_texture(void *texture) {
+    assert(texture == test_texture);
+    ++atlas_release_calls;
+}
+
+static void test_private_atlas(void) {
+    GridFixture fixture;
+    prepare_grid(&fixture, CHANGE_EQUIPMENT, false);
+    prepare_weapon(0);
+    row[MELEE_ELEMENT] = 1;
+
+    uintptr_t resource_methods[0x70 / 8] = {0};
+    resource_methods[0x58 / 8] = game + GET_RESOURCE;
+    resource_methods[0x68 / 8] = game + RELEASE_RESOURCE;
+    void *resource_manager[] = {resource_methods};
+    write_global(RESOURCE_MANAGER, resource_manager);
+    install_stub(LOAD_TEXTURE, (uintptr_t)load_test_texture);
+    install_stub(RELEASE_TEXTURE, (uintptr_t)release_test_texture);
+
+    atlas.resource = NULL;
+    assert(bind_detour(fixture.box, 12, fixture.cell));
+    assert(bind_detour(fixture.box, 12, fixture.cell));
+    assert(atlas_load_calls == 1 && atlas_release_calls == 0);
+    assert(memcmp(&fixture.sprite, &stock, sizeof(stock)) == 0);
+
+    static uint64_t texture[0xc0 / 8];
+    texture[0] = game + TEXTURE_VTABLE;
+    *(uint32_t *)((uint8_t *)texture + 0x64) = 1;
+    texture[0xa8 / 8] = (uintptr_t)&texture;
+    texture[0xb8 / 8] = UINT64_C(0x0000040000000200); /* 512x1024 */
+    test_texture = texture;
+    atlas_attempted = false;
+    assert(bind_detour(fixture.box, 12, fixture.cell));
+    assert(atlas_load_calls == 2 && atlas_release_calls == 1);
+    assert(memcmp(&fixture.sprite, &stock, sizeof(stock)) == 0);
+
+    texture[0xb8 / 8] = UINT64_C(0x0000010000000100); /* 256x256 */
+    atlas_attempted = false;
+    assert(bind_detour(fixture.box, 12, fixture.cell));
+    assert(atlas_load_calls == 3 && atlas_release_calls == 1);
+    assert(read_pointer(fixture.sprite.data, 0x150) == &atlas);
+    assert(atlas.pixels[2] == 256 && atlas.pixels[3] == 256);
+    assert(atlas.inverse_width == 1.0f / 256 && atlas.inverse_height == 1.0f / 256);
+    const float fire_uv[] = {0.0f, 0.0f, 64.0f, 64.0f};
+    assert(memcmp(fixture.sprite.data + 0x15c, fire_uv, sizeof(fire_uv)) == 0);
+    assert(bind_detour(fixture.box, 12, fixture.cell) && atlas_load_calls == 3);
+    assert(close_detour(fixture.box) == 7);
+    assert(memcmp(&fixture.sprite, &stock, sizeof(stock)) == 0);
+    puts("PASS dedicated atlas path, absent or wrong-size resource, and texture binding");
+}
+
 int main(void) {
     if (run_badge_cases()) return 1;
 
@@ -348,6 +409,7 @@ int main(void) {
     test_equipped_hunter();
     test_equipped_palico();
     test_palico_grid();
+    test_private_atlas();
     assert(VirtualFree((void *)game, 0, MEM_RELEASE));
 
     puts("PASS hunter upgrade/decoration/change grids, Palico grid, equipped slots, and close cleanup");

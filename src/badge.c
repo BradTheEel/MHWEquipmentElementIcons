@@ -1,32 +1,14 @@
 #include "badge.h"
+#include "atlas_layout.h"
 #include "sprite_layout.h"
 
 #include <string.h>
 
-/* Effect IDs stored in weapon parameters. */
-enum {
-    EFFECT_FIRE = 1,
-    EFFECT_WATER = 2,
-    EFFECT_ICE = 3,
-    EFFECT_THUNDER = 4,
-    EFFECT_DRAGON = 5,
-    EFFECT_POISON = 6,
-    EFFECT_PARALYSIS = 7,
-    EFFECT_SLEEP = 8,
-    EFFECT_BLAST = 9
-};
-
-/* Indices in the 8-column, 16-row cmn_status00_ID atlas. */
-static const uint8_t tiles[] = {
-    [EFFECT_FIRE] = 3, [EFFECT_WATER] = 4, [EFFECT_ICE] = 6,
-    [EFFECT_THUNDER] = 5, [EFFECT_DRAGON] = 7, [EFFECT_POISON] = 8,
-    [EFFECT_PARALYSIS] = 10, [EFFECT_SLEEP] = 12, [EFFECT_BLAST] = 13
-};
-
 bool badge_resolve(unsigned active, unsigned hidden, BadgeStyle *style) {
     const unsigned effect = active ? active : hidden;
-    if (effect >= sizeof(tiles) || !tiles[effect]) return false;
-    *style = (BadgeStyle){.tile = tiles[effect], .dimmed = !active};
+    if (!effect || effect > ATLAS_EFFECT_COUNT) return false;
+    /* atlas-layout.json places effect IDs 1..N in row order. */
+    *style = (BadgeStyle){.tile = (uint8_t)(effect - 1), .dimmed = !active};
     return true;
 }
 
@@ -57,9 +39,9 @@ bool badge_show(const BadgeApi *api, BadgeState *state, void *layer, void *penda
         api->set_position(pendant, position);
     }
 
-    const float u = (float)(style.tile % 8) * 64.0f;
-    const float v = (float)(style.tile / 8) * 64.0f;
-    const float uv[] = {u, v, u + 64.0f, v + 64.0f};
+    const float u = (float)(style.tile % ATLAS_COLUMNS) * ATLAS_TILE_SIZE;
+    const float v = (float)(style.tile / ATLAS_COLUMNS) * ATLAS_TILE_SIZE;
+    const float uv[] = {u, v, u + ATLAS_TILE_SIZE, v + ATLAS_TILE_SIZE};
     const float position[] = {-19.0f, 18.0f, state->position[2], state->position[3]};
     const float size[] = {24.0f, 24.0f};
     api->bind_texture(layer, atlas);

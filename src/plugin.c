@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "MinHook.h"
+#include "atlas_layout.h"
 #include "badge.h"
 #include "sprite_layout.h"
 
@@ -53,6 +54,12 @@ typedef struct TextureView {
     void *resource;
     uint64_t reserved_tail[2];
 } TextureView;
+
+enum {
+    TEXTURE_FLAGS = 0x64, TEXTURE_SHADER = 0xa8,
+    TEXTURE_WIDTH = 0xb8, TEXTURE_HEIGHT = 0xbc,
+    TEXTURE_LOADED = 1
+};
 
 _Static_assert(sizeof(TextureView) == 0x40, "game texture view size");
 _Static_assert(offsetof(TextureView, resource) == 0x28, "game texture view resource offset");
@@ -112,8 +119,12 @@ static CloseBox original_close;
 static RefreshPanel original_hunter_panel, original_palico_panel;
 static ClosePanel original_panel_close;
 static BadgeApi sprite_api;
-static TextureView atlas = {0, {0, 0, 512, 1024}, {0.0f, 0.0f, 1.0f, 1.0f},
-                            1.0f / 512.0f, 1.0f / 1024.0f, NULL, {0, 0}};
+static TextureView atlas = {
+    .pixels = {0, 0, ATLAS_WIDTH, ATLAS_HEIGHT},
+    .bounds = {0.0f, 0.0f, 1.0f, 1.0f},
+    .inverse_width = 1.0f / ATLAS_WIDTH,
+    .inverse_height = 1.0f / ATLAS_HEIGHT
+};
 static bool atlas_attempted;
 static volatile LONG hooks_ready;
 static SRWLOCK ui_lock = SRWLOCK_INIT;
@@ -137,7 +148,7 @@ static bool installed(void) {
     return InterlockedCompareExchange(&hooks_ready, 0, 0) != 0;
 }
 
-static bool load_status_atlas(void) {
+static bool load_badge_atlas(void) {
     if (atlas.resource) return true;
     if (atlas_attempted) return false;
 
@@ -148,12 +159,11 @@ static bool load_status_atlas(void) {
         read_pointer(vtable, 0x68) != (void *)(game + RELEASE_RESOURCE)) return false;
 
     atlas_attempted = true;
-    void *texture = ((LoadTexture)(game + LOAD_TEXTURE))((void *)(game + TEXTURE_DTI),
-                                                       "ui\\common\\tex\\cmn_status00_ID");
+    void *texture = ((LoadTexture)(game + LOAD_TEXTURE))((void *)(game + TEXTURE_DTI), ATLAS_RESOURCE_PATH);
     if (!texture) return false;
-    if (!has_vtable(texture, TEXTURE_VTABLE) || !(read_u32(texture, 0x64) & 1u) ||
-        !read_pointer(texture, 0xa8) || read_u32(texture, 0xb8) != 512 ||
-        read_u32(texture, 0xbc) != 1024) {
+    if (!has_vtable(texture, TEXTURE_VTABLE) || !(read_u32(texture, TEXTURE_FLAGS) & TEXTURE_LOADED) ||
+        !read_pointer(texture, TEXTURE_SHADER) || read_u32(texture, TEXTURE_WIDTH) != ATLAS_WIDTH ||
+        read_u32(texture, TEXTURE_HEIGHT) != ATLAS_HEIGHT) {
         ((ReleaseTexture)(game + RELEASE_TEXTURE))(texture);
         return false;
     }
@@ -188,7 +198,8 @@ static bool has_base_texture(void *layer) {
     if (!has_vtable(layer, SPRITE_VTABLE)) return false;
     void *view = read_pointer(layer, SPRITE_BASE_TEXTURE);
     void *texture = view ? read_pointer(view, 0x28) : NULL;
-    return has_vtable(texture, TEXTURE_VTABLE) && read_u32(texture, 0xb8) && read_u32(texture, 0xbc);
+    return has_vtable(texture, TEXTURE_VTABLE) && read_u32(texture, TEXTURE_WIDTH) &&
+           read_u32(texture, TEXTURE_HEIGHT);
 }
 
 static void restore_icon(BadgeState *state, void *icon) {
@@ -236,7 +247,7 @@ static bool show_icon(BadgeState *state, void *icon, WeaponElement element) {
     if (!is_visible_sprite(pendant)) pendant = NULL;
     if (pendant && (is_visible_sprite(read_pointer(icon, ICON_RIGHT)) ||
                     is_visible_sprite(read_pointer(icon, ICON_WISHLIST)))) return false;
-    return load_status_atlas() && badge_show(&sprite_api, state, layer, pendant, &atlas, style);
+    return load_badge_atlas() && badge_show(&sprite_api, state, layer, pendant, &atlas, style);
 }
 
 static bool supported_box_mode(void *box, bool palico) {
