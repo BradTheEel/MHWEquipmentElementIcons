@@ -1,36 +1,52 @@
 # Equipment Element Icons 0.2.3
 
-Значок стихии или статуса оружия появляется в левом нижнем углу ячейки. Там же отображается стихия, назначенная конкретному кинсекту. Девять штатных значков Monster Hunter: World собраны в отдельную текстуру мода. Плагин загружает её по пути `nativePC/ui/common/tex/equipment_element_icons.tex`.
+Equipment Element Icons adds a small badge to the lower-left corner of equipment icons in Monster Hunter: World. Weapons show their element or status effect. Kinsects show the element assigned to that individual Kinsect, so you can tell copies of the same model apart in the equipment box.
 
-- **Сменить снаряжение охотника** — оружие и кинсекты в ящике, экипированный слот оружия.
-- **У кузнеца** — списки выбора «Улучшить снаряжение» и «Покормить кинсекта».
-- **Установить украшения из ящика** — список выбора снаряжения.
-- **Сменить снаряжение палико** — оружие в ящике и экипированный слот.
+## Supported menus
 
-Скрытая стихия оружия показана приглушённо. У парных клинков с двумя эффектами показан основной эффект по данным игры. Оружие и кинсекты без стихии, а также лукорудия отображаются в обычном виде.
+| Menu | Where badges appear |
+| --- | --- |
+| Change Equipment | Hunter weapons and Kinsects in the equipment box, plus the equipped weapon slot |
+| Upgrade Equipment (Smithy) | Equipment selection grid |
+| Nurture a Kinsect (Smithy) | Kinsect selection grid |
+| Set Decorations | Equipment selection grid in the item box |
+| Change Palico Equipment | Palico weapons in the equipment box and the equipped weapon slot |
 
-Когда оружие одновременно имеет значок стихии и метку подвески, метка подвески перемещается в свободный правый верхний угол. Если этот угол уже занят, ячейка сохраняет штатное отображение.
+Hidden weapon effects use a dimmed badge. Dual Blades with two effects display the primary effect reported by the game. Kinsect badges cover fire, water, ice, thunder, and dragon. Equipment without an applicable element or status and bowguns use their standard icons.
 
-## Установка
+When a weapon has both a badge and a pendant, the pendant marker moves to the upper-right corner. If that corner is occupied, the tile uses its standard layout.
 
-Требуются Monster Hunter: World для Windows x64, Steam build `15539686`, и Stracker’s Loader. Закройте игру и распакуйте всю папку `nativePC` из архива рядом с `MonsterHunterWorld.exe`. При обновлении замените DLL и добавьте текстуру из архива.
+## Installation
 
-Чтобы удалить мод, закройте игру и удалите `nativePC/plugins/EquipmentElementIcons.dll` и `nativePC/ui/common/tex/equipment_element_icons.tex`.
+Requires Monster Hunter: World for Windows x64, Steam build `15539686`, and Stracker’s Loader. Close the game and extract the archive’s `nativePC` folder next to `MonsterHunterWorld.exe`. When upgrading, replace the DLL and texture with the copies from the new archive.
 
-## Сборка и проверка
+To uninstall, close the game and remove these files:
 
-В репозитории находятся исходники, сборочные скрипты, тесты и MinHook с лицензией. В полном архиве релиза эти файлы находятся в `source/`. Запустите `build.ps1 -ZigPath <путь-к-zig.exe>` с Zig `0.13.0`. Скрипт положит DLL в `build/` рядом со сборочными скриптами. Для запуска тестов вызовите `verify.ps1 -ZigPath <путь-к-zig.exe> -LauncherPath <путь-к-launcher.exe>` и укажите лаунчер из `work/owned-test-launcher-v1`.
+- `nativePC/plugins/EquipmentElementIcons.dll`
+- `nativePC/ui/common/tex/equipment_element_icons.tex`
 
-Путь ресурса, сетка и соответствие значков эффектам заданы в `atlas-layout.json`. Сборочный скрипт генерирует из него заголовок C, а `tools/build_atlas.py` использует его для подготовки текстуры. Список `icons` идёт по игровым ID эффектов, начиная с 1.
+## Build and test
 
-Чтобы пересобрать атлас, выполните команду с Python 3.8 или новее и извлечённым штатным файлом Steam build `15539686`.
+Use Zig `0.13.0`. In the full release archive, `source/` contains the build scripts, plugin source, tests, and vendored MinHook with its license.
 
 ```powershell
-python tools/build_atlas.py "путь\к\cmn_status00_ID.tex"
+.\build.ps1 -ZigPath "C:\path\to\zig.exe"
+.\verify.ps1 -ZigPath "C:\path\to\zig.exe" -LauncherPath "C:\path\to\launcher.exe"
 ```
 
-Генератор копирует блоки BC7 без повторного сжатия и сохраняет файл в `build/nativePC/ui/common/tex/`. Для установки готового архива Python не нужен.
+The build writes the DLL to `build/`. The test command uses the owned test launcher from `work/owned-test-launcher-v1` in the development workspace.
 
-Параметр `--check` сравнивает готовый `.tex` с результатом генерации из текущей разметки и исходного атласа.
+The texture contains nine stock effect icons. `atlas-layout.json` defines the resource path, tile layout, and game effect IDs. To regenerate it, use Python 3.8 or later and the stock `cmn_status00_ID.tex` extracted from Steam build `15539686`.
 
-Автономные проверки покрывают координаты значков, загрузку отдельного атласа и штатные сценарии снаряжения. Для кинсектов проверены пять стихий, смена предмета в той же ячейке, отсутствие стихии и недоступная модель. Отображение меток в запущенной игре ещё предстоит проверить.
+```powershell
+python tools/build_atlas.py "C:\path\to\cmn_status00_ID.tex"
+```
+
+The script copies the original BC7 blocks into `build/nativePC/ui/common/tex/equipment_element_icons.tex`. Run it with `--check` to verify an existing output. Ready-to-install archives include the texture.
+
+Offline tests cover badge placement, equipment grids, equipped weapon slots, asset loading, and all five Kinsect elements. In-game rendering in 0.2.3 remains unverified.
+
+## Changelog
+
+- **0.2.3** — Added badges for each Kinsect’s assigned element in Change Equipment and Nurture a Kinsect.
+- **0.2.2** — Moved the nine effect icons to a dedicated texture and added tools to regenerate and verify it.
