@@ -339,7 +339,23 @@ static void test_kinsect_grid(void) {
     assert(read_pointer(fixture.sprite.data, SPRITE_OVERRIDE_TEXTURE) == &atlas);
     fixture.box[BOX_MODE / 8] = 7; /* Change Kinsect Elements */
     assert(bind_detour(fixture.box, 12, fixture.cell));
+    if (read_pointer(fixture.sprite.data, SPRITE_OVERRIDE_TEXTURE) != &atlas) {
+        fputs("FAIL Change Kinsect Elements should show the currently assigned element\n", stderr);
+        ExitProcess(1);
+    }
+    assert(memcmp(fixture.sprite.data + SPRITE_UV_RECT, element_uv[1], sizeof(element_uv[1])) == 0);
+    work[0x3c / 4] = 4; /* the same Kinsect's element changed */
+    assert(bind_detour(fixture.box, 12, fixture.cell));
+    assert(memcmp(fixture.sprite.data + SPRITE_UV_RECT, element_uv[3], sizeof(element_uv[3])) == 0);
+    work[0x3c / 4] = 0;
+    assert(bind_detour(fixture.box, 12, fixture.cell));
     assert(memcmp(&fixture.sprite, &stock, sizeof(stock)) == 0);
+    prepare_weapon(0);
+    row[MELEE_ELEMENT] = 1;
+    assert(bind_detour(fixture.box, 12, fixture.cell));
+    assert(memcmp(&fixture.sprite, &stock, sizeof(stock)) == 0);
+    work[WORK_TYPE / 4] = KINSECT;
+    work[0x3c / 4] = 2;
     fixture.box[BOX_MODE / 8] = 2; /* sell */
     assert(bind_detour(fixture.box, 12, fixture.cell));
     assert(memcmp(&fixture.sprite, &stock, sizeof(stock)) == 0);
@@ -353,7 +369,7 @@ static void test_kinsect_grid(void) {
     assert(read_pointer(fixture.sprite.data, SPRITE_OVERRIDE_TEXTURE) == &atlas);
     assert(close_detour(fixture.box) == 7);
     assert(memcmp(&fixture.sprite, &stock, sizeof(stock)) == 0);
-    puts("PASS Kinsect grid badges for five elements, invalid records, cell reuse and menu scope");
+    puts("PASS Kinsect grid badges, including the Smithy's Kinsect Elements selector and element changes");
 }
 
 static void test_palico_grid(void) {

@@ -34,7 +34,8 @@ enum {
 
 enum {
     BOX_MODE = 0x28f0, BOX_SUBMODE = 0x28f4, BOX_GRID = 0x2950,
-    UPGRADE_EQUIPMENT = 0, CHANGE_EQUIPMENT = 1, SET_DECORATIONS = 4, NURTURE_KINSECT = 5,
+    UPGRADE_EQUIPMENT = 0, CHANGE_EQUIPMENT = 1, SET_DECORATIONS = 4,
+    NURTURE_KINSECT = 5, CHANGE_KINSECT_ELEMENTS = 7,
     HUNTER_GRID = 0, PALICO_GRID = 1, HUNTER_GRID_LIMIT = 2500, PALICO_GRID_LIMIT = 750,
     MAX_CELLS = 128,
     GRID_COUNT = 0x1d8, GRID_CELLS = 0x1e8,
@@ -314,7 +315,7 @@ static bool supported_box_mode(void *box, bool palico, bool kinsect) {
     if (palico) return submode == PALICO_GRID && mode == CHANGE_EQUIPMENT;
     return submode == HUNTER_GRID &&
            (mode == UPGRADE_EQUIPMENT || mode == CHANGE_EQUIPMENT || mode == SET_DECORATIONS ||
-            (kinsect && mode == NURTURE_KINSECT));
+            (kinsect && (mode == NURTURE_KINSECT || mode == CHANGE_KINSECT_ELEMENTS)));
 }
 
 static bool gui_is_open(const void *menu) {
