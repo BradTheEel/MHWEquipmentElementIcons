@@ -8,7 +8,7 @@
 
 int run_badge_cases(void);
 
-static uint32_t work[16];
+static uint32_t work[0x98 / sizeof(uint32_t)];
 static uint8_t row[0x60], swapped_weapon_row[0x60];
 static unsigned bind_calls, close_calls;
 static bool item_present, kinsect_model_present;
@@ -73,8 +73,12 @@ static const uint8_t *get_save(void *manager) {
 }
 
 static uint32_t get_hunter_slot(const uint8_t *save, uint32_t slot) {
-    assert(slot == 0);
-    return read_u32(save, 0xa8);
+    assert(slot < 6);
+    return read_u32(save, 0xa8 + slot * sizeof(uint32_t));
+}
+
+static bool has_stock_augmentation(const uint8_t *item) {
+    return read_u32(item, 0x50) != 0;
 }
 
 static void stock_panel_update(void *menu, bool force, bool palico) {
@@ -84,6 +88,7 @@ static void stock_panel_update(void *menu, bool force, bool palico) {
     uint8_t *icon = (uint8_t *)menu + (palico ? 0x3560 : 0x2900);
     uint32_t *cache = (uint32_t *)((uint8_t *)menu + (palico ? 0x3c48 : 0x3c20));
     const uint32_t index = read_u32(save_data, palico ? 0x2c8 : 0xa8);
+    if (!palico) cache[1] = read_u32(save_data, 0xac);
     if (!force && *cache == index) return;
     assert(read_pointer(read_pointer(icon, 0x80), 0x150) == NULL);
     *(uint32_t *)(icon + 0xf0) = index == UINT32_MAX ? UINT32_MAX : 1;
@@ -105,6 +110,37 @@ static bool stock_panel_close(void *menu) {
     return true;
 }
 
+static void *find_gui_child(void *root, const char *name) {
+    assert(strcmp(name, "icon_itemList") == 0);
+    return root;
+}
+
+static void stock_info_open(void *menu) {
+    *(uint32_t *)((uint8_t *)menu + INFO_MODE) = INFO_HUNTER_MODE;
+    *(uint32_t *)((uint8_t *)menu + INFO_SUBMODE) = INFO_EQUIPMENT_SUBMODE;
+}
+
+static void stock_info_appearance(void *menu, void *list, int selection) {
+    assert(menu && !list && (selection == 0 || selection == 1));
+}
+
+static void stock_info_card(void *menu) {
+    void *spare = read_pointer(menu, INFO_CARD_SPARE);
+    assert(!read_pointer(spare, SPRITE_OVERRIDE_TEXTURE));
+    fixture_api.set_hidden(spare, true);
+    if (read_u32(menu, INFO_CARD_PAGE) == INFO_KINSECT_PAGE)
+        fixture_api.set_hidden(read_pointer(menu, INFO_CARD_PENDANT), true);
+}
+
+static void stock_info_close(void *menu) {
+    assert(menu && !info_badges.menu);
+}
+
+static void stock_info_reset(void *menu) {
+    assert(info_badges.menu == menu);
+    assert(!info_badges.list_element.layer && !info_badges.card_element.layer);
+}
+
 typedef struct GridFixture {
     uint64_t box[0x2960 / 8], grid[0x200 / 8], cell[0x780 / 8];
     void *cells[1];
@@ -113,8 +149,17 @@ typedef struct GridFixture {
 
 typedef struct PanelFixture {
     uint64_t menu[0x3c50 / 8];
-    Sprite hunter, palico;
+    Sprite hunter, palico, weapon_augmentation, armor_augmentation;
 } PanelFixture;
+
+typedef struct InfoFixture {
+    uint64_t menu[0xdb00 / 8], list[0x1f0 / 8];
+    uint64_t card_root[0x60 / 8];
+    uint64_t row[2][0x1c8 / 8], node[2][0xf0 / 8];
+    void *rows[2], *children[2][11];
+    Sprite list_weapon_element, list_weapon_bolt, list_armor_bolt;
+    Sprite card, pendant, occupied;
+} InfoFixture;
 
 static Sprite stock;
 static uint64_t manager[0xb0 / 8];
@@ -126,6 +171,9 @@ static void reset_scenario(void) {
     memset(save_data, 0, sizeof(save_data));
     memset(badges, 0, sizeof(badges));
     memset(equipped_badges, 0, sizeof(equipped_badges));
+    memset(worn_augmentations, 0, sizeof(worn_augmentations));
+    info_badges = (InfoBadges){0};
+    augmentation_panel = NULL;
     owned_box = NULL;
     bind_calls = close_calls = panel_updates = panel_closes = 0;
     panel_force = false;
@@ -216,6 +264,30 @@ static void test_hunter_grid_reuse(void) {
     assert(read_pointer(fixture.sprite.data, 0x150) == &atlas);
     assert(close_detour(fixture.box) == 7 && bind_calls == 4 && close_calls == 1);
     assert(memcmp(&fixture.sprite, &stock, sizeof(stock)) == 0);
+}
+
+static void test_pendant_with_occupied_corner(void) {
+    GridFixture fixture;
+    prepare_grid(&fixture, CHANGE_EQUIPMENT, false);
+    prepare_weapon(0);
+    row[MELEE_ELEMENT] = 1;
+
+    Sprite pendant = stock, upper_right = stock;
+    fixture_api.set_active(pendant.data, true);
+    fixture_api.set_hidden(pendant.data, false);
+    fixture_api.set_active(upper_right.data, true);
+    fixture_api.set_hidden(upper_right.data, false);
+    const Sprite before = pendant;
+    fixture.cell[0x740 / 8] = (uintptr_t)pendant.data;
+    fixture.cell[0x710 / 8] = (uintptr_t)upper_right.data;
+    assert(bind_detour(fixture.box, 12, fixture.cell));
+    if (read_pointer(fixture.sprite.data, SPRITE_OVERRIDE_TEXTURE) != &atlas) {
+        fputs("FAIL the occupied pendant destination must not suppress the element\n", stderr);
+        ExitProcess(1);
+    }
+    assert(!is_visible_sprite(pendant.data) && is_visible_sprite(upper_right.data));
+    assert(close_detour(fixture.box) == 7);
+    assert(memcmp(&pendant, &before, sizeof(pendant)) == 0);
 }
 
 static void test_kinsect_grid(void) {
@@ -349,6 +421,143 @@ static void test_equipped_hunter(void) {
     assert(memcmp(&fixture.palico, &stock, sizeof(stock)) == 0);
 }
 
+static void test_equipped_augmentations(void) {
+    PanelFixture fixture;
+    prepare_panel(&fixture, false);
+    fixture.weapon_augmentation = stock;
+    fixture.armor_augmentation = stock;
+    fixture.menu[0x29b0 / 8] = (uintptr_t)fixture.weapon_augmentation.data;
+    fixture.menu[0x2ac8 / 8] = (uintptr_t)fixture.armor_augmentation.data;
+    *(uint32_t *)((uint8_t *)fixture.menu + 0x2b08) = 0; /* equipped armor icon type */
+    *(uint32_t *)((uint8_t *)save_data + 0xac) = 1;
+    prepare_weapon(0);
+    row[MELEE_ELEMENT] = 1;
+    work[0x50 / 4] = 1;
+    uint8_t *weapon = (uint8_t *)save_data + 0x41068;
+    uint8_t *armor = weapon + 0x98;
+    memcpy(weapon, work, sizeof(work));
+    work[WORK_TYPE / 4] = 0;
+    memcpy(armor, work, sizeof(work));
+
+    expect_panel_update(hunter_panel_detour, &fixture, true);
+    const float bolt_uv[] = {64.0f, 128.0f, 128.0f, 192.0f};
+    assert(read_pointer(fixture.hunter.data, SPRITE_OVERRIDE_TEXTURE) == &atlas);
+    assert(is_visible_sprite(fixture.weapon_augmentation.data));
+    assert(is_visible_sprite(fixture.armor_augmentation.data));
+    assert(memcmp(fixture.armor_augmentation.data + SPRITE_UV_RECT, bolt_uv, sizeof(bolt_uv)) == 0);
+    assert(memcmp(fixture.armor_augmentation.data + SPRITE_POSITION,
+                  stock.data + SPRITE_POSITION, 4 * sizeof(float)) == 0);
+
+    *(uint32_t *)(armor + 0x50) = 0;
+    expect_panel_update(hunter_panel_detour, &fixture, false);
+    assert(memcmp(&fixture.armor_augmentation, &stock, sizeof(stock)) == 0);
+    assert(is_visible_sprite(fixture.weapon_augmentation.data));
+    assert(panel_close_detour(fixture.menu));
+    assert(memcmp(&fixture.weapon_augmentation, &stock, sizeof(stock)) == 0);
+}
+
+static void test_equipment_info(void) {
+    reset_scenario();
+    InfoFixture fixture = {0};
+    fixture.list_weapon_element = fixture.list_weapon_bolt = fixture.list_armor_bolt = stock;
+    fixture.card = fixture.pendant = fixture.occupied = stock;
+    fixture_api.set_active(fixture.card.data, true); /* stock tex_great can be active and hidden */
+    fixture_api.set_active(fixture.pendant.data, true);
+    fixture_api.set_hidden(fixture.pendant.data, false);
+    const float bottom_left[] = {0.0f, 28.0f, 0.0f, 1.0f};
+    fixture_api.set_position(fixture.pendant.data, bottom_left);
+    const Sprite before_card = fixture.card, before_pendant = fixture.pendant;
+
+    fixture.menu[0] = game + INFO_VTABLE;
+    fixture.menu[INFO_LIST / 8] = (uintptr_t)fixture.list;
+    fixture.menu[INFO_CARD_SPARE / 8] = (uintptr_t)fixture.card.data;
+    fixture.menu[INFO_CARD_ROOT / 8] = (uintptr_t)fixture.card_root;
+    fixture.card_root[SPRITE_FLAGS / 8] = GUI_COMPONENT_VISIBLE;
+    fixture.menu[INFO_CARD_PENDANT / 8] = (uintptr_t)fixture.pendant.data;
+    fixture.menu[INFO_CARD_EQUIPPED / 8] = (uintptr_t)fixture.occupied.data;
+    *(uint32_t *)((uint8_t *)fixture.menu + INFO_CARD_PAGE) = 6;
+    fixture.list[GRID_COUNT / 8] = 2;
+    fixture.list[GRID_CELLS / 8] = (uintptr_t)fixture.rows;
+    for (uint32_t i = 0; i < 2; ++i) {
+        fixture.rows[i] = fixture.row[i];
+        fixture.row[i][INFO_ROW_ROOT / 8] = (uintptr_t)fixture.node[i];
+        fixture.node[i][GUI_CHILDREN / 8] = (uintptr_t)fixture.children[i];
+    }
+    fixture.children[0][INFO_ROW_LEFT] = fixture.list_weapon_bolt.data;
+    fixture.children[0][INFO_ROW_RIGHT] = fixture.list_weapon_element.data;
+    fixture.children[1][INFO_ROW_LEFT] = fixture.list_armor_bolt.data;
+
+    uint32_t *indices = (uint32_t *)((uint8_t *)fixture.menu + INFO_WORN_INDICES);
+    for (uint32_t i = 0; i < HUNTER_WORN_SLOTS; ++i) indices[i] = UINT32_MAX;
+    indices[0] = 0;
+    indices[1] = 1;
+    prepare_weapon(0);
+    row[MELEE_ELEMENT] = 1;
+    work[0x50 / 4] = 1;
+    uint8_t *weapon = (uint8_t *)save_data + 0x41068;
+    uint8_t *card = (uint8_t *)fixture.menu + INFO_CARD_ITEM;
+    memcpy(weapon, work, sizeof(work));
+    memcpy(card, weapon, sizeof(work));
+    work[WORK_TYPE / 4] = ARMOR;
+    memcpy(weapon + 0x98, work, sizeof(work));
+
+    info_open_detour(fixture.menu);
+    assert(is_visible_sprite(fixture.list_weapon_element.data));
+    assert(is_visible_sprite(fixture.list_weapon_bolt.data));
+    assert(is_visible_sprite(fixture.list_armor_bolt.data));
+    const float fire_uv[] = {0.0f, 0.0f, 64.0f, 64.0f};
+    const float bolt_uv[] = {64.0f, 128.0f, 128.0f, 192.0f};
+    assert(memcmp(fixture.list_weapon_element.data + SPRITE_UV_RECT, fire_uv, sizeof(fire_uv)) == 0);
+    assert(memcmp(fixture.list_armor_bolt.data + SPRITE_UV_RECT, bolt_uv, sizeof(bolt_uv)) == 0);
+    info_reset_detour(fixture.menu);
+    assert(is_visible_sprite(fixture.list_weapon_element.data) && is_visible_sprite(fixture.list_armor_bolt.data));
+
+    info_card_detour(fixture.menu);
+    assert(is_visible_sprite(fixture.card.data));
+    assert(memcmp(fixture.card.data + SPRITE_UV_RECT, fire_uv, sizeof(fire_uv)) == 0);
+    const float upper_right[] = {31.0f, 1.0f};
+    assert(memcmp(fixture.pendant.data + SPRITE_POSITION, upper_right, sizeof(upper_right)) == 0);
+    fixture_api.set_position(fixture.occupied.data, (const float[]){31.0f, 1.0f, 0.0f, 1.0f});
+    fixture_api.set_active(fixture.occupied.data, true);
+    fixture_api.set_hidden(fixture.occupied.data, false);
+    info_card_detour(fixture.menu);
+    assert(is_visible_sprite(fixture.card.data) && !is_visible_sprite(fixture.pendant.data));
+    assert(is_visible_sprite(fixture.occupied.data));
+
+    memcpy(card, weapon + 0x98, sizeof(work));
+    info_card_detour(fixture.menu);
+    assert(memcmp(&fixture.card, &before_card, sizeof(fixture.card)) == 0);
+    assert(memcmp(&fixture.pendant, &before_pendant, sizeof(fixture.pendant)) == 0);
+    info_appearance_detour(fixture.menu, NULL, 1);
+    assert(memcmp(&fixture.list_weapon_element, &stock, sizeof(stock)) == 0);
+    assert(memcmp(&fixture.list_armor_bolt, &stock, sizeof(stock)) == 0);
+    memcpy(card, weapon, sizeof(work));
+    info_appearance_detour(fixture.menu, NULL, 0);
+    assert(is_visible_sprite(fixture.list_weapon_element.data));
+    assert(is_visible_sprite(fixture.card.data));
+
+    *(uint32_t *)(card + WORK_KIND) = INSECT_GLAIVE;
+    *(uint32_t *)(card + WORK_GLAIVE_KINSECT_INDEX) = 2;
+    *(uint32_t *)((uint8_t *)fixture.menu + INFO_CARD_PAGE) = INFO_KINSECT_PAGE;
+    uint8_t *kinsect = weapon + 2 * 0x98;
+    *(uint32_t *)(kinsect + WORK_TYPE) = KINSECT;
+    *(uint32_t *)(kinsect + WORK_ID) = 7;
+    *(uint32_t *)(kinsect + WORK_KINSECT_ELEMENT) = 5;
+    info_card_detour(fixture.menu);
+    const float dragon_uv[] = {0.0f, 64.0f, 64.0f, 128.0f};
+    assert(is_visible_sprite(fixture.card.data));
+    assert(memcmp(fixture.card.data + SPRITE_UV_RECT, dragon_uv, sizeof(dragon_uv)) == 0);
+    assert(!is_visible_sprite(fixture.pendant.data));
+    *(uint32_t *)(card + WORK_GLAIVE_KINSECT_INDEX) = UINT32_MAX;
+    info_card_detour(fixture.menu);
+    assert(memcmp(&fixture.card, &before_card, sizeof(fixture.card)) == 0);
+    info_close_detour(fixture.menu);
+    assert(memcmp(&fixture.card, &before_card, sizeof(fixture.card)) == 0);
+    assert(memcmp(&fixture.list_weapon_bolt, &stock, sizeof(stock)) == 0);
+    assert(memcmp(&fixture.list_armor_bolt, &stock, sizeof(stock)) == 0);
+    puts("PASS Equipment Info list and detail badges, pendant conflicts, tab changes, and close cleanup");
+}
+
 static void test_equipped_palico(void) {
     PanelFixture fixture;
     prepare_panel(&fixture, true);
@@ -388,6 +597,8 @@ static void prepare_native_stubs(void) {
     install_stub(0x197e690, (uintptr_t)find_kinsect);
     install_stub(0x1b8dbb0, (uintptr_t)get_save);
     install_stub(0x1354930, (uintptr_t)get_hunter_slot);
+    install_stub(0xb1c060, (uintptr_t)has_stock_augmentation);
+    install_stub(FIND_GUI_CHILD, (uintptr_t)find_gui_child);
     write_global(0x5011f00, work);
     manager[0xa8 / 8] = (uintptr_t)save_data;
     write_global(0x5013950, manager);
@@ -398,6 +609,11 @@ static void prepare_native_stubs(void) {
     original_hunter_panel = stock_hunter_panel;
     original_palico_panel = stock_palico_panel;
     original_panel_close = stock_panel_close;
+    original_info_open = stock_info_open;
+    original_info_appearance = stock_info_appearance;
+    original_info_card = stock_info_card;
+    original_info_close = stock_info_close;
+    original_info_reset = stock_info_reset;
     sprite_api = fixture_api;
 
     static uint64_t texture[0x18];
@@ -479,8 +695,11 @@ int main(void) {
     prepare_native_stubs();
     test_hunter_grid_modes();
     test_hunter_grid_reuse();
+    test_pendant_with_occupied_corner();
     test_kinsect_grid();
     test_equipped_hunter();
+    test_equipped_augmentations();
+    test_equipment_info();
     test_equipped_palico();
     test_palico_grid();
     test_private_atlas();

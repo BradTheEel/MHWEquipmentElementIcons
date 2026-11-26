@@ -13,5 +13,6 @@
     { "id": 7, "effect": "paralysis", "stock_tile": 10 },
     { "id": 8, "effect": "sleep", "stock_tile": 12 },
     { "id": 9, "effect": "blast", "stock_tile": 13 }
-  ]
+  ],
+  "augmentation": { "tile": 9, "stock_column": 15, "stock_row": 13 }
 }

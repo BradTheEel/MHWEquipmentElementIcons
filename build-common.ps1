@@ -40,6 +40,11 @@ function Invoke-EquipmentElementBuild {
             throw 'Atlas icons must be ordered by effect ID starting at 1.'
         }
     }
+    $augmentationTile = $layout.augmentation.tile
+    if (($augmentationTile -isnot [int] -and $augmentationTile -isnot [long]) -or
+        $augmentationTile -lt $effects -or $augmentationTile -ge $columns * $rows) {
+        throw 'The augmentation tile must be a slot after the effect icons and within the atlas.'
+    }
     $resourceLiteral = ConvertTo-Json -InputObject $resource.Replace('/', '\') -Compress
     $atlasHeader = @"
 #ifndef EQUIPMENT_ELEMENT_ATLAS_LAYOUT_H
@@ -52,7 +57,8 @@ enum {
     ATLAS_ROWS = $rows,
     ATLAS_WIDTH = ATLAS_TILE_SIZE * ATLAS_COLUMNS,
     ATLAS_HEIGHT = ATLAS_TILE_SIZE * ATLAS_ROWS,
-    ATLAS_EFFECT_COUNT = $effects
+    ATLAS_EFFECT_COUNT = $effects,
+    ATLAS_AUGMENTATION_TILE = $augmentationTile
 };
 
 #endif

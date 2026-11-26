@@ -21,8 +21,10 @@ static void test_badge_effect_selection(void) {
 
 static bool show(BadgeState *state, void *layer, void *pendant, unsigned active, unsigned hidden) {
     BadgeStyle style;
+    const BadgePlacement placement = {-19.0f, 18.0f, 24.0f, 24.0f};
+    const float pendant_corner[] = {18.0f, -18.0f};
     return badge_resolve(active, hidden, &style) &&
-           badge_show(&fixture_api, state, layer, pendant, &private_atlas, style);
+           badge_show(&fixture_api, state, layer, pendant, &private_atlas, style, &placement, pendant_corner);
 }
 
 int run_badge_cases(void) {

@@ -19,6 +19,10 @@ enum {
     DUAL_LOOKUP = 0x00462700, DUAL_TABLE = 0x05012190,
     PANEL_VTABLE = 0x0346d968, HUNTER_PANEL_REFRESH = 0x01e0b5f0,
     PALICO_PANEL_REFRESH = 0x01e0b2e0, PANEL_CLOSE = 0x01e0a540,
+    HAS_AUGMENTATION = 0x00b1c060,
+    INFO_VTABLE = 0x03483d18, INFO_OPEN = 0x01ee7ab0, INFO_APPEARANCE = 0x01edaaa0,
+    INFO_CARD_REFRESH = 0x01ee5320, INFO_CLOSE = 0x01edf320, INFO_RESET = 0x01edf420,
+    FIND_GUI_CHILD = 0x02340e20,
     SAVE_MANAGER = 0x05013950, ACTIVE_SAVE = 0x01b8dbb0, HUNTER_EQUIPPED_INDEX = 0x01354930,
     LOAD_TEXTURE = 0x02216e50, RELEASE_TEXTURE = 0x022174d0,
     RESOURCE_MANAGER = 0x05123a00, GET_RESOURCE = 0x022228d0, RELEASE_RESOURCE = 0x02225c70,
@@ -35,15 +39,25 @@ enum {
     MAX_CELLS = 128,
     GRID_COUNT = 0x1d8, GRID_CELLS = 0x1e8,
     CELL_ICON = 0x688,
-    ICON_LEFT = 0x80, ICON_RIGHT = 0x88, ICON_WISHLIST = 0xa8,
+    ICON_LEFT = 0x80, ICON_RIGHT = 0x88, ICON_WISHLIST = 0xa8, ICON_AUGMENTATION = 0xb0,
     ICON_PENDANT = 0xb8, ICON_TYPE = 0xf0,
     WORK_TYPE = 0x18, WORK_KIND = 0x20, WORK_ID = 0x24, WORK_KINSECT_ELEMENT = 0x3c,
-    WEAPON = 1, KINSECT = 4, DUAL_BLADES = 2, BOW = 11,
+    ARMOR = 0, WEAPON = 1, KINSECT = 4, DUAL_BLADES = 2, BOW = 11,
     KINSECT_MODEL_COUNT = 201, KINSECT_MAX_ELEMENT = 5,
     MELEE_ELEMENT = 0x25, MELEE_HIDDEN = 0x28, MELEE_COMBO = 0x31,
     BOW_ELEMENT = 0x27, BOW_HIDDEN = 0x2a, COMBO_PRIMARY = 0xc, PALICO_ELEMENT = 0x2e,
     GUI_LIFECYCLE = 0x1d04, GUI_OPENING = 1, GUI_ACTIVE = 2,
-    PANEL_MODE = 0x28f0, SAVE_PALICO_EQUIPPED = 0x2c8, WORK_STRIDE = 0x98
+    PANEL_MODE = 0x28f0, PANEL_ICON_STRIDE = 0x118, HUNTER_WORN_SLOTS = 6,
+    SAVE_PALICO_EQUIPPED = 0x2c8, WORK_STRIDE = 0x98,
+
+    INFO_MODE = 0x28f0, INFO_SUBMODE = 0x28f4, INFO_HUNTER_MODE = 1, INFO_EQUIPMENT_SUBMODE = 0x26,
+    INFO_REMOTE_HUNTER = 0xd2a0, INFO_LIST = 0xd938, INFO_WORN_INDICES = 0xd900,
+    INFO_ROW_ROOT = 0x1c0, GUI_CHILDREN = 0xe8, INFO_ROW_LEFT = 9, INFO_ROW_RIGHT = 10,
+    INFO_CARD_ITEM = 0xa7b0, INFO_CARD_PAGE = 0xdaf8, INFO_CARD_DETAIL_KIND = 0x8270,
+    INFO_CARD_ROOT = 0x2948, GUI_COMPONENT_VISIBLE = 1u << 1,
+    INFO_CARD_SPARE = 0x2a00, INFO_CARD_EQUIPPED = 0x29e0,
+    INFO_CARD_AUGMENTATION = 0x2a20, INFO_CARD_PENDANT = 0x2a30,
+    INFO_KINSECT_PAGE = 0xd, INSECT_GLAIVE = 0xa, WORK_GLAIVE_KINSECT_INDEX = 0x3c
 };
 
 typedef struct TextureView {
@@ -75,6 +89,10 @@ typedef void *(*LoadTexture)(void *dti, const char *name);
 typedef void (*ReleaseTexture)(void *resource);
 typedef const uint8_t *(*ActiveSave)(const void *manager);
 typedef uint32_t (*EquippedIndex)(const void *save, uint32_t slot);
+typedef bool (*HasAugmentation)(const void *item);
+typedef void (*InfoUpdate)(void *menu);
+typedef void (*InfoSelectTab)(void *menu, void *list, int selection);
+typedef void *(*FindGuiChild)(void *object, const char *name);
 typedef void (*RefreshPanel)(void *menu, bool force);
 typedef bool (*ClosePanel)(void *menu);
 
@@ -113,12 +131,22 @@ typedef struct EquippedBadge {
     EquipmentEffect element;
 } EquippedBadge;
 
+typedef struct InfoBadges {
+    void *menu;
+    bool show_equipment;
+    BadgeState list_element;
+    BadgeState list_augmentations[HUNTER_WORN_SLOTS];
+    BadgeState card_element;
+} InfoBadges;
+
 static uintptr_t game;
 static BindCell original_bind;
 static BindCell original_palico_bind;
 static CloseBox original_close;
 static RefreshPanel original_hunter_panel, original_palico_panel;
 static ClosePanel original_panel_close;
+static InfoUpdate original_info_open, original_info_card, original_info_close, original_info_reset;
+static InfoSelectTab original_info_appearance;
 static BadgeApi sprite_api;
 static TextureView atlas = {
     .pixels = {0, 0, ATLAS_WIDTH, ATLAS_HEIGHT},
@@ -132,6 +160,9 @@ static SRWLOCK ui_lock = SRWLOCK_INIT;
 static void *owned_box;
 static BadgeState badges[MAX_CELLS];
 static EquippedBadge equipped_badges[EQUIPPED_SLOT_COUNT];
+static void *augmentation_panel;
+static BadgeState worn_augmentations[HUNTER_WORN_SLOTS];
+static InfoBadges info_badges;
 
 static uint32_t read_u32(const void *object, size_t offset) {
     return *(const uint32_t *)((const uint8_t *)object + offset);
@@ -203,15 +234,18 @@ static bool has_base_texture(void *layer) {
            read_u32(texture, TEXTURE_HEIGHT);
 }
 
-static void restore_icon(BadgeState *state, void *icon) {
-    if (!state->layer) return;
-    void *layer = icon ? read_pointer(icon, ICON_LEFT) : NULL;
-    if (state->layer == layer && has_base_texture(layer)) {
-        void *pendant = read_pointer(icon, ICON_PENDANT);
+static void restore_layer(BadgeState *state, void *layer, void *pendant) {
+    if (layer && state->layer == layer && has_base_texture(layer)) {
         if (!has_vtable(pendant, SPRITE_VTABLE)) pendant = NULL;
         badge_restore(&sprite_api, state, layer, pendant, &atlas);
     }
     *state = (BadgeState){0};
+}
+
+static void restore_icon(BadgeState *state, void *icon) {
+    if (!state->layer) return;
+    restore_layer(state, icon ? read_pointer(icon, ICON_LEFT) : NULL,
+                  icon ? read_pointer(icon, ICON_PENDANT) : NULL);
 }
 
 static EquipmentEffect weapon_element(const uint8_t *item, bool palico) {
@@ -253,17 +287,25 @@ static EquipmentEffect kinsect_element(const uint8_t *item) {
     return (EquipmentEffect){.active = element};
 }
 
-static bool show_icon(BadgeState *state, void *icon, EquipmentEffect element) {
+static bool show_element(BadgeState *state, void *layer, EquipmentEffect element, void *pendant,
+                         const BadgePlacement *placement, const float *pendant_corner) {
     BadgeStyle style;
-    if (!badge_resolve(element.active, element.hidden, &style)) return false;
-    void *layer = read_pointer(icon, ICON_LEFT);
-    if (!has_base_texture(layer)) return false;
+    return badge_resolve(element.active, element.hidden, &style) && has_base_texture(layer) &&
+           load_badge_atlas() &&
+           badge_show(&sprite_api, state, layer, pendant, &atlas, style, placement, pendant_corner);
+}
 
+static bool show_icon(BadgeState *state, void *icon, EquipmentEffect element) {
+    static const BadgePlacement placement = {-19.0f, 18.0f, 24.0f, 24.0f};
+    static const float upper_right[] = {18.0f, -18.0f};
+    void *layer = read_pointer(icon, ICON_LEFT);
+    if (!has_vtable(layer, SPRITE_VTABLE) ||
+        (read_u32(layer, SPRITE_FLAGS) & SPRITE_VISIBILITY_MASK) != SPRITE_HIDDEN) return false;
     void *pendant = read_pointer(icon, ICON_PENDANT);
     if (!is_visible_sprite(pendant)) pendant = NULL;
-    if (pendant && (is_visible_sprite(read_pointer(icon, ICON_RIGHT)) ||
-                    is_visible_sprite(read_pointer(icon, ICON_WISHLIST)))) return false;
-    return load_badge_atlas() && badge_show(&sprite_api, state, layer, pendant, &atlas, style);
+    const bool occupied = pendant && (is_visible_sprite(read_pointer(icon, ICON_RIGHT)) ||
+                                     is_visible_sprite(read_pointer(icon, ICON_WISHLIST)));
+    return show_element(state, layer, element, pendant, &placement, occupied ? NULL : upper_right);
 }
 
 static bool supported_box_mode(void *box, bool palico, bool kinsect) {
@@ -345,6 +387,262 @@ static const uint8_t *active_save(void) {
     return ((ActiveSave)(game + ACTIVE_SAVE))(manager);
 }
 
+static const uint8_t *hunter_item(const uint8_t *save, uint32_t index) {
+    const EquippedSlot *layout = &equipped_slots[EQUIPPED_HUNTER];
+    return save && index < layout->work_capacity ? save + layout->work_offset + index * WORK_STRIDE : NULL;
+}
+
+static bool show_augmentation(BadgeState *state, void *layer, const BadgePlacement *placement) {
+    const BadgeStyle style = {.tile = ATLAS_AUGMENTATION_TILE};
+    return has_base_texture(layer) && load_badge_atlas() &&
+           badge_show(&sprite_api, state, layer, NULL, &atlas, style, placement, NULL);
+}
+
+static void clear_worn_augmentations(void *menu) {
+    if (augmentation_panel != menu) return;
+    const uint8_t *first_icon = (const uint8_t *)menu + equipped_slots[EQUIPPED_HUNTER].icon_offset;
+    for (size_t slot = 0; slot < HUNTER_WORN_SLOTS; ++slot)
+        restore_layer(&worn_augmentations[slot],
+                      read_pointer(first_icon + slot * PANEL_ICON_STRIDE, ICON_AUGMENTATION), NULL);
+    augmentation_panel = NULL;
+}
+
+static void prepare_worn_augmentations(void *menu, bool force) {
+    if (!installed() || !has_vtable(menu, PANEL_VTABLE)) return;
+    const EquippedSlot *layout = &equipped_slots[EQUIPPED_HUNTER];
+    const bool selected = gui_is_open(menu) && read_u32(menu, PANEL_MODE) == layout->mode;
+    const uint8_t *save = selected ? active_save() : NULL;
+
+    AcquireSRWLockExclusive(&ui_lock);
+    if (!save || force) {
+        clear_worn_augmentations(menu);
+    } else if (augmentation_panel == menu) {
+        const EquippedIndex equipped_index = (EquippedIndex)(game + HUNTER_EQUIPPED_INDEX);
+        const uint8_t *first_icon = (const uint8_t *)menu + layout->icon_offset;
+        for (uint32_t slot = 0; slot < HUNTER_WORN_SLOTS; ++slot) {
+            BadgeState *state = &worn_augmentations[slot];
+            if (state->layer && read_u32(menu, layout->cache_offset + slot * sizeof(uint32_t)) !=
+                                equipped_index(save, slot))
+                restore_layer(state, read_pointer(first_icon + slot * PANEL_ICON_STRIDE, ICON_AUGMENTATION), NULL);
+        }
+    }
+    ReleaseSRWLockExclusive(&ui_lock);
+}
+
+static void update_worn_augmentations(void *menu) {
+    if (!installed() || !has_vtable(menu, PANEL_VTABLE)) return;
+    const EquippedSlot *layout = &equipped_slots[EQUIPPED_HUNTER];
+    const bool selected = gui_is_open(menu) && read_u32(menu, PANEL_MODE) == layout->mode;
+    const uint8_t *save = selected ? active_save() : NULL;
+
+    AcquireSRWLockExclusive(&ui_lock);
+    if (!save) {
+        clear_worn_augmentations(menu);
+    } else if (!augmentation_panel || augmentation_panel == menu) {
+        for (uint32_t slot = 0; slot < HUNTER_WORN_SLOTS; ++slot) {
+            const uint8_t *icon = (const uint8_t *)menu + layout->icon_offset + slot * PANEL_ICON_STRIDE;
+            void *layer = read_pointer(icon, ICON_AUGMENTATION);
+            const uint32_t index = ((EquippedIndex)(game + HUNTER_EQUIPPED_INDEX))(save, slot);
+            const uint32_t type = slot ? ARMOR : WEAPON;
+            const uint8_t *item = hunter_item(save, index);
+            const bool show = layer && item && read_u32(icon, ICON_TYPE) == type &&
+                read_u32(item, WORK_TYPE) == type &&
+                read_u32(menu, layout->cache_offset + slot * sizeof(index)) == index &&
+                ((HasAugmentation)(game + HAS_AUGMENTATION))(item);
+            BadgeState *state = &worn_augmentations[slot];
+            if (show && state->layer == layer && is_visible_sprite(layer) &&
+                read_pointer(layer, SPRITE_OVERRIDE_TEXTURE) == &atlas) continue;
+            if (state->layer) restore_layer(state, layer, NULL);
+            if (show && show_augmentation(state, layer, NULL)) augmentation_panel = menu;
+        }
+    }
+    ReleaseSRWLockExclusive(&ui_lock);
+}
+
+static bool is_local_equipment_info(void *menu) {
+    return has_vtable(menu, INFO_VTABLE) && read_u32(menu, INFO_MODE) == INFO_HUNTER_MODE &&
+           read_u32(menu, INFO_SUBMODE) == INFO_EQUIPMENT_SUBMODE &&
+           !((const uint8_t *)menu)[INFO_REMOTE_HUNTER];
+}
+
+static void **info_row_layers(void *menu, uint32_t slot) {
+    void *list = read_pointer(menu, INFO_LIST);
+    if (!list || read_u32(list, GRID_COUNT) <= slot) return NULL;
+    void **rows = read_pointer(list, GRID_CELLS);
+    void *root = rows && rows[slot] ? read_pointer(rows[slot], INFO_ROW_ROOT) : NULL;
+    if (!root) return NULL;
+    void *icon = ((FindGuiChild)(game + FIND_GUI_CHILD))(root, "icon_itemList");
+    return icon ? read_pointer(icon, GUI_CHILDREN) : NULL;
+}
+
+/* The list's stock left/right layers share a centered 40 px icon. */
+static void update_info_list(void *menu) {
+    static const BadgePlacement placement = {-13.0f, 13.0f, 16.0f, 16.0f};
+    if (!is_local_equipment_info(menu)) return;
+    const uint8_t *save = active_save();
+    if (!save) return;
+
+    AcquireSRWLockExclusive(&ui_lock);
+    if (info_badges.menu == menu && info_badges.show_equipment) {
+        for (uint32_t slot = 0; slot < HUNTER_WORN_SLOTS; ++slot) {
+            const uint8_t *item = hunter_item(save, read_u32(menu, INFO_WORN_INDICES + slot * sizeof(uint32_t)));
+            if (!item || read_u32(item, WORK_TYPE) != (slot ? ARMOR : WEAPON)) continue;
+            void **layers = info_row_layers(menu, slot);
+            if (!layers) continue;
+            if (!slot)
+                show_element(&info_badges.list_element, layers[INFO_ROW_RIGHT],
+                             weapon_element(item, false), NULL, &placement, NULL);
+            if (((HasAugmentation)(game + HAS_AUGMENTATION))(item))
+                show_augmentation(&info_badges.list_augmentations[slot], layers[INFO_ROW_LEFT], NULL);
+        }
+    }
+    ReleaseSRWLockExclusive(&ui_lock);
+}
+
+static void restore_info_card(void *menu) {
+    if (info_badges.card_element.layer)
+        restore_layer(&info_badges.card_element, read_pointer(menu, INFO_CARD_SPARE),
+                      read_pointer(menu, INFO_CARD_PENDANT));
+}
+
+static void restore_info(void *menu) {
+    if (info_badges.menu != menu) return;
+    restore_info_card(menu);
+    for (uint32_t slot = 0; slot < HUNTER_WORN_SLOTS; ++slot) {
+        BadgeState *augmentation = &info_badges.list_augmentations[slot];
+        BadgeState *element = slot == 0 ? &info_badges.list_element : NULL;
+        if (!augmentation->layer && (!element || !element->layer)) continue;
+        void **layers = info_row_layers(menu, slot);
+        if (element) restore_layer(element, layers ? layers[INFO_ROW_RIGHT] : NULL, NULL);
+        restore_layer(augmentation, layers ? layers[INFO_ROW_LEFT] : NULL, NULL);
+    }
+}
+
+static bool is_card_corner_occupied(void *layer) {
+    if (!is_visible_sprite(layer)) return false;
+    const float *position = (const float *)((const uint8_t *)layer + SPRITE_POSITION);
+    return position[0] > 16.0f && position[1] < 16.0f;
+}
+
+/* tex_great is stock-hidden on weapon and Kinsect detail pages. */
+static void update_info_card(void *menu) {
+    static const BadgePlacement placement = {1.0f, 31.0f, 16.0f, 16.0f};
+    static const float upper_right[] = {31.0f, 1.0f};
+    const uint8_t *item = (const uint8_t *)menu + INFO_CARD_ITEM;
+    const uint32_t page = read_u32(menu, INFO_CARD_PAGE);
+    if (read_u32(item, WORK_TYPE) != WEAPON || read_u32(item, WORK_ID) == UINT32_MAX) return;
+
+    EquipmentEffect effect;
+    if (page == INFO_KINSECT_PAGE) {
+        if (read_u32(item, WORK_KIND) != INSECT_GLAIVE) return;
+        const uint8_t *kinsect = hunter_item(active_save(), read_u32(item, WORK_GLAIVE_KINSECT_INDEX));
+        effect = kinsect_element(kinsect);
+    } else {
+        if ((page < 6 || (page > 10 && page != 12)) ||
+            read_u32(menu, INFO_CARD_DETAIL_KIND) == INFO_KINSECT_PAGE) return;
+        effect = weapon_element(item, false);
+    }
+    void *pendant = read_pointer(menu, INFO_CARD_PENDANT);
+    if (!is_visible_sprite(pendant)) pendant = NULL;
+    const bool occupied = pendant && (is_card_corner_occupied(read_pointer(menu, INFO_CARD_EQUIPPED)) ||
+                                     is_card_corner_occupied(read_pointer(menu, INFO_CARD_AUGMENTATION)));
+    show_element(&info_badges.card_element, read_pointer(menu, INFO_CARD_SPARE), effect, pendant,
+                 &placement, occupied ? NULL : upper_right);
+}
+
+static void update_visible_info_card(void *menu) {
+    if (!is_local_equipment_info(menu)) return;
+    const void *root = read_pointer(menu, INFO_CARD_ROOT);
+    if (!root || !(read_u32(root, SPRITE_FLAGS) & GUI_COMPONENT_VISIBLE)) return;
+
+    AcquireSRWLockExclusive(&ui_lock);
+    if (info_badges.menu == menu && info_badges.show_equipment && !info_badges.card_element.layer)
+        update_info_card(menu);
+    ReleaseSRWLockExclusive(&ui_lock);
+}
+
+static void info_open_detour(void *menu) {
+    const bool tracked = installed() && has_vtable(menu, INFO_VTABLE);
+    if (tracked) {
+        AcquireSRWLockExclusive(&ui_lock);
+        restore_info(menu);
+        if (!info_badges.menu || info_badges.menu == menu) {
+            info_badges.menu = menu;
+            info_badges.show_equipment = true;
+        }
+        ReleaseSRWLockExclusive(&ui_lock);
+    }
+    original_info_open(menu);
+    if (tracked && is_local_equipment_info(menu)) {
+        AcquireSRWLockExclusive(&ui_lock);
+        /* Opening may have reset an earlier instance of the stock sidebar. */
+        if (!info_badges.menu) {
+            info_badges.menu = menu;
+            info_badges.show_equipment = true;
+        }
+        ReleaseSRWLockExclusive(&ui_lock);
+        update_info_list(menu);
+        update_visible_info_card(menu);
+    }
+}
+
+static void info_appearance_detour(void *menu, void *list, int selection) {
+    const bool tracked = installed() && is_local_equipment_info(menu);
+    if (tracked) {
+        AcquireSRWLockExclusive(&ui_lock);
+        restore_info(menu);
+        if (info_badges.menu == menu) info_badges.show_equipment = selection == 0;
+        ReleaseSRWLockExclusive(&ui_lock);
+    }
+    original_info_appearance(menu, list, selection);
+    if (tracked && selection == 0) {
+        update_info_list(menu);
+        update_visible_info_card(menu);
+    }
+}
+
+static void info_card_detour(void *menu) {
+    const bool tracked = installed() && has_vtable(menu, INFO_VTABLE);
+    if (tracked) {
+        AcquireSRWLockExclusive(&ui_lock);
+        if (info_badges.menu == menu) restore_info_card(menu);
+        ReleaseSRWLockExclusive(&ui_lock);
+    }
+    original_info_card(menu);
+    if (tracked) update_visible_info_card(menu);
+}
+
+static void finish_info(void *menu) {
+    if (installed() && has_vtable(menu, INFO_VTABLE)) {
+        AcquireSRWLockExclusive(&ui_lock);
+        if (info_badges.menu == menu) {
+            restore_info(menu);
+            info_badges = (InfoBadges){0};
+        }
+        ReleaseSRWLockExclusive(&ui_lock);
+    }
+}
+
+static void info_close_detour(void *menu) {
+    finish_info(menu);
+    original_info_close(menu);
+}
+
+static void info_reset_detour(void *menu) {
+    const bool tracked = installed() && has_vtable(menu, INFO_VTABLE);
+    if (tracked) {
+        AcquireSRWLockExclusive(&ui_lock);
+        restore_info(menu);
+        ReleaseSRWLockExclusive(&ui_lock);
+    }
+    original_info_reset(menu);
+    /* The opening virtual can run after the Equipment Info opener has bound the list. */
+    if (tracked) {
+        update_info_list(menu);
+        update_visible_info_card(menu);
+    }
+}
+
 static void refresh_panel(void *menu, bool force, EquippedSlotId slot_id, RefreshPanel original) {
     if (!installed() || !has_vtable(menu, PANEL_VTABLE)) {
         original(menu, force);
@@ -399,7 +697,9 @@ static void refresh_panel(void *menu, bool force, EquippedSlotId slot_id, Refres
 }
 
 static void hunter_panel_detour(void *menu, bool force) {
+    prepare_worn_augmentations(menu, force);
     refresh_panel(menu, force, EQUIPPED_HUNTER, original_hunter_panel);
+    update_worn_augmentations(menu);
 }
 
 static void palico_panel_detour(void *menu, bool force) {
@@ -409,6 +709,7 @@ static void palico_panel_detour(void *menu, bool force) {
 static bool panel_close_detour(void *menu) {
     if (installed() && has_vtable(menu, PANEL_VTABLE)) {
         AcquireSRWLockExclusive(&ui_lock);
+        clear_worn_augmentations(menu);
         for (unsigned i = 0; i < EQUIPPED_SLOT_COUNT; ++i) {
             if (equipped_badges[i].menu == menu) {
                 restore_icon(&equipped_badges[i].badge, (uint8_t *)menu + equipped_slots[i].icon_offset);
@@ -442,6 +743,13 @@ static bool supported_game(uintptr_t base) {
         {HUNTER_PANEL_REFRESH,{0x40,0x53,0x56,0x41,0x54,0x41,0x55,0x41,0x57,0x48,0x83,0xec,0x20,0x48,0x89,0x6c}},
         {PALICO_PANEL_REFRESH,{0x40,0x53,0x57,0x41,0x54,0x41,0x55,0x41,0x57,0x48,0x83,0xec,0x20,0x44,0x0f,0xb6}},
         {PANEL_CLOSE,     {0x48,0x89,0x6c,0x24,0x20,0x57,0x48,0x83,0xec,0x20,0x83,0x89,0x98,0x22,0x00,0x00}},
+        {HAS_AUGMENTATION,{0x83,0x79,0x50,0x00,0x4c,0x8b,0xc1,0xba,0x01,0x00,0x00,0x00,0x0f,0x95,0xc0,0x0f}},
+        {INFO_OPEN,       {0x48,0x8b,0xc4,0x48,0x89,0x58,0x08,0x48,0x89,0x68,0x10,0x48,0x89,0x70,0x18,0x48}},
+        {INFO_APPEARANCE, {0x48,0x8b,0xc4,0x44,0x89,0x40,0x18,0x55,0x56,0x48,0x8d,0xa8,0xa8,0xfe,0xff,0xff}},
+        {INFO_CARD_REFRESH,{0x40,0x56,0x48,0x83,0xec,0x40,0x48,0x8b,0xf1,0xb2,0x01,0x48,0x8b,0x89,0x48,0x29}},
+        {INFO_CLOSE,      {0x48,0x89,0x5c,0x24,0x18,0x48,0x89,0x74,0x24,0x20,0x57,0x48,0x83,0xec,0x30,0x0f}},
+        {INFO_RESET,      {0x48,0x89,0x5c,0x24,0x08,0x57,0x48,0x83,0xec,0x20,0x48,0x8b,0xd9,0xe8,0x1e,0x44}},
+        {FIND_GUI_CHILD,  {0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x7c,0x24,0x10,0x48,0x8b,0x81,0xc8,0x00,0x00}},
         {ACTIVE_SAVE,     {0x48,0x63,0x81,0xa0,0x00,0x00,0x00,0x48,0x69,0xc0,0x00,0xcc,0x26,0x00,0x48,0x03}},
         {HUNTER_EQUIPPED_INDEX,{0x80,0xb9,0xa0,0x91,0x26,0x00,0x00,0x4c,0x8b,0xc9,0x74,0x43,0x8d,0x42,0xf9,0x83}},
         {MELEE_LOOKUP,    {0x8b,0xc1,0x83,0xfa,0xff,0x75,0x03,0x33,0xc0,0xc3,0x48,0x8b,0x0d,0xaf,0x36,0x69}},
@@ -462,7 +770,9 @@ static bool supported_game(uintptr_t base) {
             return false;
     }
     return read_pointer((void *)(base + BOX_VTABLE), 0x2d8) == (void *)(base + BOX_CLOSE) &&
-           read_pointer((void *)(base + PANEL_VTABLE), 0x2d8) == (void *)(base + PANEL_CLOSE);
+           read_pointer((void *)(base + PANEL_VTABLE), 0x2d8) == (void *)(base + PANEL_CLOSE) &&
+           read_pointer((void *)(base + INFO_VTABLE), 0x2d8) == (void *)(base + INFO_CLOSE) &&
+           read_pointer((void *)(base + INFO_VTABLE), 0x2d0) == (void *)(base + INFO_RESET);
 }
 
 static DWORD WINAPI install(void *unused) {
@@ -492,6 +802,11 @@ static DWORD WINAPI install(void *unused) {
         {PALICO_BIND, (void *)palico_bind_detour, (void **)&original_palico_bind},
         {HUNTER_PANEL_REFRESH, (void *)hunter_panel_detour, (void **)&original_hunter_panel},
         {PALICO_PANEL_REFRESH, (void *)palico_panel_detour, (void **)&original_palico_panel},
+        {INFO_OPEN, (void *)info_open_detour, (void **)&original_info_open},
+        {INFO_APPEARANCE, (void *)info_appearance_detour, (void **)&original_info_appearance},
+        {INFO_CARD_REFRESH, (void *)info_card_detour, (void **)&original_info_card},
+        {INFO_CLOSE, (void *)info_close_detour, (void **)&original_info_close},
+        {INFO_RESET, (void *)info_reset_detour, (void **)&original_info_reset},
     };
     for (size_t i = 0; i < sizeof(hooks) / sizeof(hooks[0]); ++i) {
         void *target = (void *)(game + hooks[i].rva);

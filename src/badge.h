@@ -21,6 +21,9 @@ typedef struct BadgeState {
     float size[2];
     void *pendant;
     float pendant_position[4];
+    float pendant_corner[2];
+    uint32_t visibility;
+    bool pendant_hidden;
     uint8_t alpha;
 } BadgeState;
 
@@ -29,9 +32,13 @@ typedef struct BadgeStyle {
     bool dimmed;
 } BadgeStyle;
 
+typedef struct BadgePlacement {
+    float x, y, width, height;
+} BadgePlacement;
+
 bool badge_resolve(unsigned active, unsigned hidden, BadgeStyle *style);
 bool badge_show(const BadgeApi *api, BadgeState *state, void *layer, void *pendant, void *atlas,
-                BadgeStyle style);
+                BadgeStyle style, const BadgePlacement *placement, const float *pendant_corner);
 void badge_restore(const BadgeApi *api, BadgeState *state, void *layer, void *pendant, void *atlas);
 
 #endif
